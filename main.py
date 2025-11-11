@@ -116,6 +116,31 @@ class StatusResponse(BaseModel):
 # ============================================================================
 
 @app.get(
+    "/",
+    summary="API Root",
+    description="Root endpoint with API information and available endpoints",
+    tags=["Info"]
+)
+async def root():
+    """
+    Root endpoint that provides API information.
+    
+    Returns:
+        dict: API information and available endpoints
+    """
+    return {
+        "message": "Welcome to the User Registration API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "endpoints": {
+            "GET /status": "Check API status",
+            "POST /register": "Register a new user (requires name, email, age 18+)"
+        }
+    }
+
+
+@app.get(
     "/status",
     response_model=StatusResponse,
     summary="Check API Status",
