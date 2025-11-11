@@ -1,114 +1,226 @@
 """
-FastAPI Backend Application
-A simple REST API with user registration functionality.
+FastAPI Lung Cancer Prediction API
+A RESTful API for predicting lung cancer risk based on patient symptoms and characteristics.
 """
 
 from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, EmailStr, Field, field_validator
-import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
+import numpy as np
+import sys
+import warnings
 import os
+import uvicorn
+
+warnings.filterwarnings('ignore')
 
 # Initialize FastAPI application
-# This automatically enables Swagger UI at /docs and ReDoc at /redoc
 app = FastAPI(
-    title="User Registration API",
-    description="A simple API for user registration with validation",
+    title="Lung Cancer Prediction API",
+    description="A RESTful API for predicting lung cancer risk based on patient symptoms",
     version="1.0.0",
-    docs_url="/docs",  # Swagger UI documentation
-    redoc_url="/redoc"  # Alternative API documentation
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
+
+# Enable CORS for all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================================================
+# Model Loading with Compatibility Handling
+# ============================================================================
+
+model = None
+scaler = None
+
+# Try to load using the robust loader
+try:
+    import sklearn
+    print(f"scikit-learn version: {sklearn.__version__}")
+    
+    # First, try aggressive patching - USE EuclideanDistance64 (not 32!)
+    try:
+        import sklearn.metrics._dist_metrics as dist_metrics
+        
+        # Patch EuclideanDistance if missing - prioritize 64-bit version
+        if not hasattr(dist_metrics, 'EuclideanDistance'):
+            print("Attempting to patch EuclideanDistance...")
+            
+            # Try option 1: Use EuclideanDistance64 (model uses 64-bit)
+            if hasattr(dist_metrics, 'EuclideanDistance64'):
+                EuclideanDistance64 = dist_metrics.EuclideanDistance64
+                dist_metrics.EuclideanDistance = EuclideanDistance64
+                setattr(dist_metrics, 'EuclideanDistance', EuclideanDistance64)
+                
+                # Update in sys.modules - CRITICAL for unpickling
+                mod_name = 'sklearn.metrics._dist_metrics'
+                if mod_name in sys.modules:
+                    setattr(sys.modules[mod_name], 'EuclideanDistance', EuclideanDistance64)
+                
+                if hasattr(dist_metrics, '__dict__'):
+                    dist_metrics.__dict__['EuclideanDistance'] = EuclideanDistance64
+                
+                print("[OK] Patched EuclideanDistance using EuclideanDistance64")
+            
+            # Fallback: Use EuclideanDistance32
+            elif hasattr(dist_metrics, 'EuclideanDistance32'):
+                EuclideanDistance32 = dist_metrics.EuclideanDistance32
+                dist_metrics.EuclideanDistance = EuclideanDistance32
+                setattr(dist_metrics, 'EuclideanDistance', EuclideanDistance32)
+                
+                mod_name = 'sklearn.metrics._dist_metrics'
+                if mod_name in sys.modules:
+                    setattr(sys.modules[mod_name], 'EuclideanDistance', EuclideanDistance32)
+                
+                if hasattr(dist_metrics, '__dict__'):
+                    dist_metrics.__dict__['EuclideanDistance'] = EuclideanDistance32
+                
+                print("[OK] Patched EuclideanDistance using EuclideanDistance32")
+        
+        # Ensure patch is in sys.modules
+        if 'sklearn.metrics._dist_metrics' in sys.modules and hasattr(dist_metrics, 'EuclideanDistance'):
+            if not hasattr(sys.modules['sklearn.metrics._dist_metrics'], 'EuclideanDistance'):
+                setattr(sys.modules['sklearn.metrics._dist_metrics'], 'EuclideanDistance', dist_metrics.EuclideanDistance)
+        
+    except Exception as patch_error:
+        print(f"Warning: Could not apply pre-patch: {patch_error}")
+        import traceback
+        traceback.print_exc()
+    
+    # Now try to load the model
+    try:
+        print("Loading model...")
+        import joblib
+        
+        # Try standard loading first
+        try:
+            model = joblib.load('best_lung_cancer_model.joblib')
+            scaler = joblib.load('scaler.joblib')
+            print("[OK] Model and scaler loaded successfully!")
+        except (AttributeError, ModuleNotFoundError, KeyError) as e:
+            if 'EuclideanDistance' in str(e) or 'EuclideanDistance' in repr(e):
+                print("Compatibility issue detected. Trying alternative loading method...")
+                
+                # Try using the model_loader
+                try:
+                    from model_loader import load_sklearn_model_safe
+                    model, scaler = load_sklearn_model_safe('best_lung_cancer_model.joblib', 'scaler.joblib')
+                    print("[OK] Model and scaler loaded successfully using compatibility loader!")
+                except Exception as e2:
+                    print(f"Compatibility loader also failed: {e2}")
+                    raise e  # Raise original error
+            else:
+                raise
+        
+        # Print model info if available
+        if hasattr(model, 'feature_names_in_'):
+            print(f"Model expects {len(model.feature_names_in_)} features")
+            print(f"Features: {list(model.feature_names_in_)}")
+        if hasattr(model, 'classes_'):
+            print(f"Model classes: {model.classes_}")
+        if scaler and hasattr(scaler, 'n_features_in_'):
+            print(f"Scaler expects {scaler.n_features_in_} features")
+            
+    except Exception as e:
+        error_msg = str(e)
+        print("\n" + "="*70)
+        print("MODEL LOADING ERROR")
+        print("="*70)
+        print(f"\nError: {error_msg}")
+        print("\nTroubleshooting steps:")
+        print("\n1. Try installing a compatible scikit-learn version:")
+        print("   pip uninstall scikit-learn")
+        print("   pip install scikit-learn==1.2.2")
+        print("\n2. If that doesn't work, try using Python 3.10 or 3.11")
+        print("   (Python 3.12 may have compatibility issues)")
+        print("\n3. Alternative: Install scikit-learn with pre-built wheels:")
+        print("   pip install --only-binary :all: scikit-learn==1.2.2")
+        print("\n4. Check that both model files exist:")
+        print("   - best_lung_cancer_model.joblib")
+        print("   - scaler.joblib")
+        print("="*70 + "\n")
+        import traceback
+        traceback.print_exc()
+        model = None
+        scaler = None
+        
+except Exception as e:
+    print(f"Critical error during initialization: {e}")
+    import traceback
+    traceback.print_exc()
+    model = None
+    scaler = None
 
 
 # ============================================================================
 # Pydantic Models for Request/Response Validation
 # ============================================================================
 
-class RegisterRequest(BaseModel):
+class PredictionRequest(BaseModel):
     """
-    Request model for user registration.
-    Validates name, email, and age fields.
+    Request model for lung cancer prediction.
     """
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="User's full name",
-        examples=["John Doe"]
-    )
-    email: EmailStr = Field(
-        ...,
-        description="User's email address",
-        examples=["john.doe@example.com"]
-    )
-    age: int = Field(
-        ...,
-        description="User's age (must be 18 or older)",
-        examples=[25]
-    )
+    gender: str = Field(..., description="Patient gender", examples=["M"])
+    age: float = Field(..., ge=1, le=150, description="Patient age", examples=[65])
+    smoking: str = Field(..., description="Smoking status", examples=["YES"])
+    yellow_fingers: str = Field(..., description="Yellow fingers symptom", examples=["NO"])
+    anxiety: str = Field(..., description="Anxiety symptom", examples=["NO"])
+    peer_pressure: str = Field(..., description="Peer pressure", examples=["NO"])
+    chronic_disease: str = Field(..., description="Chronic disease", examples=["YES"])
+    fatigue: str = Field(..., description="Fatigue symptom", examples=["YES"])
+    allergy: str = Field(..., description="Allergy", examples=["NO"])
+    wheezing: str = Field(..., description="Wheezing symptom", examples=["YES"])
+    alcohol: str = Field(..., description="Alcohol consumption", examples=["NO"])
+    coughing: str = Field(..., description="Coughing symptom", examples=["YES"])
+    shortness_of_breath: str = Field(..., description="Shortness of breath", examples=["YES"])
+    swallowing_difficulty: str = Field(..., description="Swallowing difficulty", examples=["NO"])
+    chest_pain: str = Field(..., description="Chest pain symptom", examples=["YES"])
     
-    @field_validator('name')
+    @field_validator('gender')
     @classmethod
-    def validate_name(cls, v: str) -> str:
-        """Validate that name is not empty after stripping whitespace."""
-        if not v.strip():
-            raise ValueError("Name cannot be empty")
-        return v.strip()
-    
-    @field_validator('age')
-    @classmethod
-    def validate_age(cls, v: int) -> int:
-        """Validate that age is 18 or older."""
-        if v < 18:
-            raise ValueError("User must be at least 18")
+    def validate_gender(cls, v: str) -> str:
+        """Validate gender is M or F."""
+        v = v.upper()
+        if v not in ['M', 'F']:
+            raise ValueError('gender must be "M" or "F"')
         return v
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
-            "example": {
-                "name": "John Doe",
-                "email": "john.doe@example.com",
-                "age": 25
-            }
-        }
+    @field_validator('smoking', 'yellow_fingers', 'anxiety', 'peer_pressure', 
+                     'chronic_disease', 'fatigue', 'allergy', 'wheezing', 
+                     'alcohol', 'coughing', 'shortness_of_breath', 
+                     'swallowing_difficulty', 'chest_pain')
+    @classmethod
+    def validate_yes_no(cls, v: str) -> str:
+        """Validate YES/NO fields."""
+        v = v.upper()
+        if v not in ['YES', 'NO']:
+            raise ValueError('must be "YES" or "NO"')
+        return v
 
 
-class RegisterResponse(BaseModel):
+class PredictionResponse(BaseModel):
     """
-    Response model for successful registration.
+    Response model for prediction.
     """
-    success: bool = Field(
-        ...,
-        description="Indicates if registration was successful",
-        examples=[True]
-    )
-    message: str = Field(
-        ...,
-        description="Confirmation message",
-        examples=["User registered successfully"]
-    )
-    user: dict = Field(
-        ...,
-        description="Registered user information",
-        examples=[{
-            "name": "John Doe",
-            "email": "john.doe@example.com",
-            "age": 25
-        }]
-    )
+    success: bool = Field(..., description="Indicates if prediction was successful")
+    prediction: str = Field(..., description="Prediction result: YES or NO")
+    probability: float = Field(..., description="Confidence percentage")
+    message: str = Field(..., description="Human-readable message")
 
 
 class StatusResponse(BaseModel):
     """
     Response model for status endpoint.
     """
-    status: str = Field(
-        ...,
-        description="API status message",
-        examples=["API is running"]
-    )
+    status: str = Field(..., description="API status message")
 
 
 # ============================================================================
@@ -118,24 +230,19 @@ class StatusResponse(BaseModel):
 @app.get(
     "/",
     summary="API Root",
-    description="Root endpoint with API information and available endpoints",
+    description="Root endpoint with API information",
     tags=["Info"]
 )
 async def root():
-    """
-    Root endpoint that provides API information.
-    
-    Returns:
-        dict: API information and available endpoints
-    """
+    """Root endpoint that provides API information."""
     return {
-        "message": "Welcome to the User Registration API",
+        "message": "Welcome to the Lung Cancer Prediction API",
         "version": "1.0.0",
         "docs": "/docs",
         "redoc": "/redoc",
         "endpoints": {
             "GET /status": "Check API status",
-            "POST /register": "Register a new user (requires name, email, age 18+)"
+            "POST /predict": "Predict lung cancer risk"
         }
     }
 
@@ -144,7 +251,7 @@ async def root():
     "/status",
     response_model=StatusResponse,
     summary="Check API Status",
-    description="Returns the current status of the API",
+    description="Returns the current status of the API and model loading status",
     tags=["Health"]
 )
 async def get_status():
@@ -152,90 +259,154 @@ async def get_status():
     Health check endpoint.
     
     Returns:
-        JSONResponse: Status message indicating the API is running
-        
-    Example Response:
-        {
-            "status": "API is running"
-        }
+        StatusResponse: Status message indicating if API and model are ready
     """
-    return StatusResponse(status="API is running")
+    if model is None or scaler is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model or scaler not loaded"
+        )
+    
+    return StatusResponse(status="API is running and model is loaded")
 
 
 @app.post(
-    "/register",
-    response_model=RegisterResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a New User",
-    description="Register a new user with name, email, and age. Age must be 18 or older.",
-    tags=["Users"]
+    "/predict",
+    response_model=PredictionResponse,
+    summary="Predict Lung Cancer Risk",
+    description="Predict lung cancer risk based on patient symptoms and characteristics",
+    tags=["Prediction"]
 )
-async def register_user(user_data: RegisterRequest):
+async def predict(data: PredictionRequest):
     """
-    Register a new user endpoint.
-    
-    This endpoint accepts user registration data and validates:
-    - Name: Must be non-empty string (1-100 characters)
-    - Email: Must be a valid email format
-    - Age: Must be 18 or older
+    Predict lung cancer risk based on patient data.
     
     Args:
-        user_data (RegisterRequest): User registration data
+        data: PredictionRequest containing patient information
         
     Returns:
-        RegisterResponse: Success confirmation with user data
+        PredictionResponse: Prediction result with confidence score
         
     Raises:
-        HTTPException: 400 Bad Request if validation fails
-        HTTPException: 422 Unprocessable Entity if request format is invalid
-        
-    Example Request:
-        {
-            "name": "John Doe",
-            "email": "john.doe@example.com",
-            "age": 25
-        }
-        
-    Example Response:
-        {
-            "success": true,
-            "message": "User registered successfully",
-            "user": {
-                "name": "John Doe",
-                "email": "john.doe@example.com",
-                "age": 25
-            }
-        }
+        HTTPException: 500 if model not loaded, 400 if validation fails
     """
-    # Age validation is handled by Pydantic field_validator
-    # In a real application, you would:
-    # 1. Check if email already exists in database
-    # 2. Hash password if included
-    # 3. Save user to database
-    # 4. Send confirmation email
-    # For now, we'll just return a success response
+    if model is None or scaler is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Model or scaler not loaded. Please check server logs for details."
+        )
     
-    return RegisterResponse(
-        success=True,
-        message="User registered successfully",
-        user={
-            "name": user_data.name,
-            "email": user_data.email,
-            "age": user_data.age
-        }
-    )
+    try:
+        # Convert YES/NO to numeric (YES=2, NO=1)
+        smoking = 2 if data.smoking == 'YES' else 1
+        yellow_fingers = 2 if data.yellow_fingers == 'YES' else 1
+        anxiety = 2 if data.anxiety == 'YES' else 1
+        peer_pressure = 2 if data.peer_pressure == 'YES' else 1
+        chronic_disease = 2 if data.chronic_disease == 'YES' else 1
+        fatigue = 2 if data.fatigue == 'YES' else 1
+        allergy = 2 if data.allergy == 'YES' else 1
+        wheezing = 2 if data.wheezing == 'YES' else 1
+        alcohol = 2 if data.alcohol == 'YES' else 1
+        coughing = 2 if data.coughing == 'YES' else 1
+        shortness_of_breath = 2 if data.shortness_of_breath == 'YES' else 1
+        swallowing_difficulty = 2 if data.swallowing_difficulty == 'YES' else 1
+        chest_pain = 2 if data.chest_pain == 'YES' else 1
+        
+        # Try different gender encodings
+        # Pattern 1: M=1, F=0 (binary)
+        gender_encoded = 1 if data.gender == 'M' else 0
+        
+        # Create feature array
+        features_v1 = np.array([[
+            gender_encoded,  # Gender: M=1, F=0
+            data.age,
+            smoking,
+            yellow_fingers,
+            anxiety,
+            peer_pressure,
+            chronic_disease,
+            fatigue,
+            allergy,
+            wheezing,
+            alcohol,
+            coughing,
+            shortness_of_breath,
+            swallowing_difficulty,
+            chest_pain
+        ]], dtype=np.float64)
+        
+        # Try alternative: gender as M=2, F=1
+        gender_encoded_v2 = 2 if data.gender == 'M' else 1
+        features_v2 = np.array([[
+            gender_encoded_v2,  # Gender: M=2, F=1
+            data.age,
+            smoking,
+            yellow_fingers,
+            anxiety,
+            peer_pressure,
+            chronic_disease,
+            fatigue,
+            allergy,
+            wheezing,
+            alcohol,
+            coughing,
+            shortness_of_breath,
+            swallowing_difficulty,
+            chest_pain
+        ]], dtype=np.float64)
+        
+        # Try to make prediction with first encoding
+        try:
+            features_scaled = scaler.transform(features_v1)
+            prediction = model.predict(features_scaled)[0]
+            prediction_proba = model.predict_proba(features_scaled)[0]
+        except:
+            # If that fails, try second encoding
+            try:
+                features_scaled = scaler.transform(features_v2)
+                prediction = model.predict(features_scaled)[0]
+                prediction_proba = model.predict_proba(features_scaled)[0]
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Error processing features: {str(e)}"
+                )
+        
+        # Get probability and result
+        # Model classes are [0, 1] where 0=NO, 1=YES
+        if prediction == 1:
+            result = "YES"
+            probability = prediction_proba[1] * 100 if len(prediction_proba) > 1 else (1 - prediction_proba[0]) * 100
+        else:
+            result = "NO"
+            probability = prediction_proba[0] * 100
+        
+        return PredictionResponse(
+            success=True,
+            prediction=result,
+            probability=round(probability, 2),
+            message=f'Prediction: {result} (Confidence: {probability:.2f}%)'
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Prediction error: {error_details}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Prediction failed: {str(e)}'
+        )
 
 
 # ============================================================================
-# Custom Exception Handlers
+# Exception Handlers
 # ============================================================================
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    """
-    Custom handler for HTTP exceptions.
-    Returns consistent error response format.
-    """
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Custom handler for HTTP exceptions."""
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -248,29 +419,8 @@ async def http_exception_handler(request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Custom handler for Pydantic validation errors.
-    Converts validation errors to 400 Bad Request with custom message for age.
-    """
+    """Custom handler for validation errors."""
     errors = exc.errors()
-    
-    # Check if the error is related to age validation
-    for error in errors:
-        error_loc = error.get("loc", [])
-        error_msg = str(error.get("msg", ""))
-        
-        # Check if this is an age validation error
-        if "age" in error_loc and ("User must be at least 18" in error_msg or "18" in error_msg):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "success": False,
-                    "error": "User must be at least 18",
-                    "status_code": 400
-                }
-            )
-    
-    # For other validation errors, return standard format
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
@@ -287,12 +437,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # ============================================================================
 
 if __name__ == "__main__":
-    # Run the application using uvicorn
     # Get port from environment variable (for deployment) or default to 8000
     port = int(os.environ.get("PORT", 8000))
     
     # --reload enables auto-reload on code changes (development only)
-    # In production, reload should be False
     reload = os.environ.get("ENVIRONMENT", "development") == "development"
     
     uvicorn.run(
@@ -301,4 +449,3 @@ if __name__ == "__main__":
         port=port,
         reload=reload
     )
-

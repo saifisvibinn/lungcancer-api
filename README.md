@@ -1,6 +1,14 @@
-# FastAPI User Registration Backend
+# Lung Cancer Prediction API
 
-A clean, production-ready FastAPI backend with user registration functionality.
+A FastAPI-based REST API for predicting lung cancer risk based on patient symptoms and characteristics.
+
+## Features
+
+- ✅ RESTful API endpoints
+- ✅ Automatic Swagger/OpenAPI documentation
+- ✅ Pydantic models for request validation
+- ✅ CORS support for web applications
+- ✅ Production-ready with error handling
 
 ## Quick Start
 
@@ -24,21 +32,47 @@ See `QUICK_DEPLOY.md` for quick deployment instructions (Railway recommended).
 
 For detailed deployment options, see `DEPLOYMENT.md`.
 
-## Documentation
-
-- **Quick Start Guide:** `FASTAPI_README.md`
-- **Deployment Guide:** `DEPLOYMENT.md`
-- **Quick Deploy:** `QUICK_DEPLOY.md`
-
 ## API Endpoints
 
+- `GET /` - API information
 - `GET /status` - Check API status
-- `POST /register` - Register a new user (requires name, email, age 18+)
+- `POST /predict` - Predict lung cancer risk
 
-## Features
+## Request Format
 
-- ✅ RESTful API endpoints
-- ✅ Automatic Swagger/OpenAPI documentation
-- ✅ Pydantic models for request validation
-- ✅ Age validation (18+)
-- ✅ Clean, production-ready code
+```json
+{
+  "gender": "M",
+  "age": 65,
+  "smoking": "YES",
+  "yellow_fingers": "NO",
+  "anxiety": "NO",
+  "peer_pressure": "NO",
+  "chronic_disease": "YES",
+  "fatigue": "YES",
+  "allergy": "NO",
+  "wheezing": "YES",
+  "alcohol": "NO",
+  "coughing": "YES",
+  "shortness_of_breath": "YES",
+  "swallowing_difficulty": "NO",
+  "chest_pain": "YES"
+}
+```
+
+## Response Format
+
+```json
+{
+  "success": true,
+  "prediction": "YES",
+  "probability": 87.5,
+  "message": "Prediction: YES (Confidence: 87.50%)"
+}
+```
+
+## Notes
+
+- This application is for educational/research purposes only
+- Medical predictions should always be verified by healthcare professionals
+- The model accuracy depends on the quality of the training data

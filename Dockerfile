@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
+COPY model_loader.py .
+COPY best_lung_cancer_model.joblib .
+COPY scaler.joblib .
 COPY start.sh .
 
 # Make startup script executable
