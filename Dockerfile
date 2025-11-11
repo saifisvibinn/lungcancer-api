@@ -12,12 +12,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
+COPY start.sh .
+
+# Make startup script executable
+RUN chmod +x start.sh
 
 # Expose port (Railway/Render will set PORT env variable)
 EXPOSE 8000
 
-# Run the application
-# Railway/Render will override this with their start command that includes $PORT
-# This is a fallback for local Docker runs
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application using the startup script
+# This properly handles the PORT environment variable
+# Using shell form to execute the bash script
+CMD ./start.sh
 
